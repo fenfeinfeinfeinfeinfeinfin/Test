@@ -1,0 +1,7 @@
+{
+  "appId": "com.custom.chessman",
+  "appName": "Custom Chess, Man",
+  "webDir": "www",
+  "android": { "allowMixedContent": true, "webContentsDebuggingEnabled": true },
+  "server": { "androidScheme": "https" }
+}
