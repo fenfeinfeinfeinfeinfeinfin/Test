@@ -2876,19 +2876,29 @@ function buildInfUI(){const box=$("infOpts");if(!box||$("infSetW"))return;
 const WKEY="chessWorkshop.v1",MAXDOC=950000,MAXITEM=90000;
 const WSS=Object.assign({url:"",by:"",liked:[],own:[]},LSget(WKEY,null)||{});
 const saveWS=()=>LSset(WKEY,WSS);
-const wsUrl=()=>{let u=(WSS.url||WORKSHOP_URL||"").trim();if(!u)return"";if(/^[A-Za-z0-9-]{8,}$/.test(u))u="https://jsonblob.com/api/jsonBlob/"+u;return u};
-async function wsFetch(method,body){const url=wsUrl();if(!url)throw new Error("not-connected");if(navigator.onLine===false)throw new Error("offline");
- const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),15000);
- try{const r=await fetch(url,{method,headers:method==="GET"?{"Accept":"application/json"}:{"Content-Type":"application/json","Accept":"application/json"},body:body!==undefined?JSON.stringify(body):undefined,signal:ctl.signal,cache:"no-store"});
-  if(!r.ok)throw new Error("http-"+r.status);const t=await r.text();try{return t?JSON.parse(t):null}catch(e){return null}}
+const wsUrl=()=>{let u=(WSS.url||WORKSHOP_URL||"").trim();if(!u)return"";const m=u.match(/jsonblob\.com\/(?:api\/jsonBlob\/|api\/|)([0-9a-f]{8}-[0-9a-f-]{20,})/i);if(m)return"https://jsonblob.com/api/jsonBlob/"+m[1];if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{16,}$/i.test(u))u="https://jsonblob.com/api/jsonBlob/"+u;return /^https?:\/\//i.test(u)?u:""};
+async function httpReq(method,url,body,ms){
+ const CH=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.CapacitorHttp;
+ const hd=method==="GET"?{"Accept":"application/json"}:{"Content-Type":"application/json","Accept":"application/json"};
+ if(CH&&CH.request){ /* Android app: native HTTP — no CORS limits and every response header is readable */
+  const r=await CH.request({url,method,headers:hd,data:body,connectTimeout:ms,readTimeout:ms,responseType:"text"});
+  const h={};for(const k in(r.headers||{}))h[k.toLowerCase()]=r.headers[k];
+  return{ok:r.status>=200&&r.status<300,status:r.status,headers:h,text:typeof r.data==="string"?r.data:(r.data==null?"":JSON.stringify(r.data)),url:r.url||url}}
+ const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),ms);
+ try{const r=await fetch(url,{method,headers:hd,body:body!==undefined?JSON.stringify(body):undefined,signal:ctl.signal,cache:"no-store"});
+  const h={};try{r.headers.forEach((v,k)=>h[k.toLowerCase()]=v)}catch(e){}
+  return{ok:r.ok,status:r.status,headers:h,text:await r.text().catch(()=>""),url:r.url||url}}
  catch(e){if(e.name==="AbortError")throw new Error("timeout");throw e}finally{clearTimeout(to)}}
+async function wsFetch(method,body){const url=wsUrl();if(!url)throw new Error("not-connected");if(navigator.onLine===false)throw new Error("offline");
+ let r;try{r=await httpReq(method,url,body,15000)}catch(e){if(/time.?out/i.test(String(e&&e.message)))throw new Error("timeout");throw e}
+ if(!r.ok)throw new Error("http-"+r.status);try{return r.text?JSON.parse(r.text):null}catch(e){return null}}
 const imgOk=u=>typeof u==="string"&&/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(u)&&u.length<120000;
 function cleanPiece(d){const n=CP.norm(d);if(!n)return null;const fix=im=>{if(!im||!im.k)return null;if(im.k==="data")return imgOk(im.d)?{k:"data",d:im.d}:{k:"none"};if(["none","im","pci","cus","pt","pa"].includes(im.k))return{k:im.k,v:im.v};return{k:"none"}};n.img=fix(n.img)||{k:"none"};n.imgB=fix(n.imgB);return n}
 function normDoc(d){const items=d&&Array.isArray(d.items)?d.items:[];return{v:1,items:items.filter(x=>x&&typeof x==="object"&&typeof x.id==="string"&&(x.kind==="piece"||x.kind==="setup")&&x.data)}}
-const wsRead=async()=>normDoc(await wsFetch("GET"));
-async function wsWrite(doc){try{return await wsFetch("PUT",doc)}catch(e){if(/http-(404|405)/.test(e.message))return await wsFetch("POST",doc);throw e}}
+const wsRead=async()=>{try{return normDoc(await wsFetch("GET"))}catch(e){if(/^(timeout|Failed to fetch|NetworkError)/.test(e.message)||e.name==="TypeError"){await new Promise(r=>setTimeout(r,700));return normDoc(await wsFetch("GET"))}throw e}};
+async function wsWrite(doc){try{return await wsFetch("PUT",doc)}catch(e){if(/http-(404|405)/.test(e.message)&&/jsonblob\.com/.test(wsUrl()))return await wsFetch("POST",doc);throw e}}
 async function wsMutate(fn){const doc=await wsRead();if(fn(doc)===false)return false;const s=JSON.stringify(doc);if(s.length>MAXDOC)throw new Error("full");await wsWrite(doc);return doc}
-function wsErr(e){const m=String(e&&e.message||e);if(m==="not-connected")return"The Workshop isn’t connected yet — open ⚙ Connection.";if(m==="offline")return"You’re offline. The Workshop needs an internet connection.";if(m==="timeout")return"The Workshop took too long to answer. Try again.";if(m==="full")return"The Workshop is full. Ask the host to clear space, or delete some of your older uploads.";if(/^http-4(03|29)/.test(m))return"The Workshop server refused the request ("+m.slice(5)+"). It may be rate-limited — try again in a minute.";if(/^http-/.test(m))return"The Workshop server answered with an error ("+m.slice(5)+").";return"Couldn’t reach the Workshop. Something is blocking jsonblob.com: a sandboxed preview/in-app viewer, a school/work network, or an ad-blocker. Open the file directly in Chrome/Edge/Firefox on a normal connection."}
+function wsErr(e){const m=String(e&&e.message||e);if(m==="not-connected")return"The Workshop isn’t connected yet — open ⚙ Connection.";if(m==="offline")return"You’re offline. The Workshop needs an internet connection.";if(m==="timeout")return"The Workshop took too long to answer. Try again.";if(m==="full")return"The Workshop is full. Ask the host to clear space, or delete some of your older uploads.";if(/^http-4(03|29)/.test(m))return"The Workshop server refused the request ("+m.slice(5)+"). It may be rate-limited — try again in a minute.";if(m==="http-404")return"That Workshop address no longer exists (it was deleted or mistyped). Press “Create shared workshop” or paste a new code.";if(/^http-/.test(m))return"The Workshop server answered with an error ("+m.slice(5)+").";return"Couldn’t reach the Workshop. Something is blocking jsonblob.com: a sandboxed preview/in-app viewer, a school/work network, or an ad-blocker. Open the file directly in Chrome/Edge/Firefox on a normal connection."}
 function shrink(u,max){return new Promise(res=>{if(!imgOk(u)&&!(typeof u==="string"&&u.startsWith("data:image/")))return res(null);const im=new Image();im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height)),cv=document.createElement("canvas");cv.width=Math.max(1,Math.round(im.width*k));cv.height=Math.max(1,Math.round(im.height*k));cv.getContext("2d").drawImage(im,0,0,cv.width,cv.height);let o=cv.toDataURL("image/webp",.8);if(!o.startsWith("data:image/webp"))o=cv.toDataURL("image/png");res(o)};im.onerror=()=>res(null);im.src=u})}
 async function prepPiece(d){const n=cleanPiece(d);if(!n)return null;for(const k of["img","imgB"]){const im=n[k];if(im&&im.k==="data"){const o=await shrink(im.d,128);n[k]=o&&imgOk(o)?{k:"data",d:o}:{k:"none"}}}return n}
 const wm=modal("workshop","wide");
@@ -2924,22 +2934,32 @@ function publishHTML(conn){if(!conn)return'<div class="empty">Connect to a Works
  if(PUB.pick!=null&&c[PUB.pick]){const x=c[PUB.pick];h+='<h4>Details</h4><div class="wsform"><label>Title<input id="wstitle" type="text" maxlength="30" value="'+esc(x.name)+'"></label><label>Your name<input id="wsby" type="text" maxlength="20" placeholder="Anonymous" value="'+esc(WSS.by)+'"></label><label>Description<textarea id="wsdesc" maxlength="160" placeholder="What does it do? (optional)">'+esc(x.data.desc||"")+'</textarea></label><div><button class="go" data-w="publish">🛠 Publish to the Workshop</button></div></div>'}
  return h}
 function connHTML(conn){const u=wsUrl(),code=(u.match(/jsonBlob\/([\w-]+)/)||[])[1];
- return'<div class="wsstat '+(conn?(WERR?"bad":"ok"):"")+'" id="wsstat"><i></i><span>'+(conn?(WERR?esc(WERR):"Connected: "+esc(u)):"Not connected")+'</span></div>'
+ return'<div class="wsstat '+(WERR?"bad":conn?"ok":"")+'" id="wsstat"><i></i><span style="white-space:pre-wrap">'+(WERR?esc(WERR):conn?"Connected: "+esc(u):"Not connected")+'</span></div>'
  +'<h4>How the Workshop works</h4><p class="sub">Everything people publish is stored in one shared online document. Anyone using the <b>same address</b> sees the same Workshop. Needs internet; nothing is moderated, so don’t publish anything you wouldn’t want everyone to see.</p>'
- +'<h4>Make it shared for everyone</h4><div class="bar"><button class="go" data-w="create">✨ Create shared workshop</button><small>Makes a new empty online document (uses the free jsonblob.com service).</small></div>'
+ +'<h4>Make it shared for everyone</h4><div class="bar"><button class="go" data-w="create">✨ Create shared workshop</button> <button data-w="test">🔍 Test connection</button> <a class="go" href="https://jsonblob.com" target="_blank" rel="noopener" style="display:inline-block;padding:8px 12px;border-radius:10px;text-decoration:none">🌐 Open jsonblob.com</a><small>Makes a new empty online document (uses the free jsonblob.com service).</small></div>'
  +(u?'<p class="sub">To make <b>everyone who opens the HTML</b> connect automatically, paste this line over the <code>const WORKSHOP_URL = "";</code> line near the bottom of the HTML file and send people the updated file:</p><div class="codebox" id="wscode">const WORKSHOP_URL = "'+esc(u)+'";</div><div class="bar"><button data-w="copy">📋 Copy line</button>'+(code?'<button data-w="copycode">📋 Copy code</button>':"")+"</div>":"")
  +'<h4>Join an existing Workshop</h4><div class="bar"><input id="wsurl" type="text" placeholder="Paste a Workshop code or address…" style="flex:1;min-width:180px" value="'+esc(WSS.url)+'"><button data-w="save">Connect</button><button data-w="clear" class="danger">Disconnect</button></div><small>Accepts a jsonblob code (e.g. 1234abcd-…) or a full URL of any JSON store that allows GET and PUT.</small>'}
 async function wsRefresh(){if(!wsUrl()){drawWS();return}WLOAD=true;WERR="";if(WT==="browse")drawWS();try{WDOC=await wsRead()}catch(e){WERR=wsErr(e);WDOC=null}WLOAD=false;drawWS()}
-async function wsCreate(auto){try{const r=await fetch("https://jsonblob.com/api/jsonBlob",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({v:1,items:[]})});if(!r.ok)throw new Error("http-"+r.status);let loc=r.headers.get("Location")||r.headers.get("location")||r.headers.get("x-jsonblob")||"";const id=(loc.match(/([0-9a-f]{8}-[0-9a-f-]{20,})/i)||[])[1]||(/^[\w-]{8,}$/.test(loc)?loc:"");
-  if(!id){toast("Created, but the browser hid the new address. Create one at jsonblob.com, then paste its code below.",1);return}
-  WSS.url="https://jsonblob.com/api/jsonBlob/"+id;saveWS();WERR="";WT="conn";drawWS();if(!auto)toast("Workshop created! Copy the line below into the HTML to share it.")}catch(e){if(!auto)toast(wsErr(e),1);else WERR=wsErr(e)}}
+async function wsCreate(auto){let why="";
+ try{const r=await httpReq("POST","https://jsonblob.com/api/jsonBlob",{v:1,items:[]},15000);
+  if(!r.ok)throw new Error("http-"+r.status);
+  const loc=[r.headers["location"],r.headers["x-jsonblob"],r.headers["x-jsonblob-id"],r.url].filter(Boolean).join(" ");const m=loc.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{16,})/i);
+  if(!m)throw new Error("no-address");
+  WSS.url="https://jsonblob.com/api/jsonBlob/"+m[1];saveWS();WERR="";WDOC=null;WT=auto?"browse":"conn";drawWS();if(!auto)toast("Workshop created! Use “Copy code” and give the SAME code to everyone.");return true}
+ catch(e){why=e.message==="no-address"?"your browser hides the new address (CORS)":(e.message==="Failed to fetch"?"blocked or no connection":e.message)}
+ WERR="Couldn’t create a Workshop automatically ("+why+").\n\nDo this once (works everywhere): tap “🌐 Open jsonblob.com”, press Save, copy the code from the address bar (it looks like 019a…-…-…), come back, paste it in the box below and press Connect. Give the SAME code to everyone.\n\nThe Android app (new build) can create one with a single tap.";
+ if(!auto)toast("Couldn’t create a Workshop — see the Connection tab.",1);return false}
+async function wsTest(){const out=[];out.push("page: "+location.protocol+"//"+(location.host||"file")+" · online: "+navigator.onLine+(window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.CapacitorHttp?" · native HTTP: yes":" · native HTTP: no"));const u=wsUrl();out.push("address: "+(u||"(none)"));
+ if(u){try{const d=await wsRead();WDOC=d;out.push("✔ connected — "+d.items.length+" item(s) in the Workshop")}catch(e){out.push("✘ "+(e.message==="Failed to fetch"?"blocked/unreachable (network, ad-blocker or CORS)":/http-404/.test(e.message)?"that Workshop doesn’t exist (wrong or deleted code). Create a new one.":e.message))}}
+ try{const r=await httpReq("GET","https://jsonblob.com/api/jsonBlob/00000000-0000-0000-0000-000000000000",undefined,8000);out.push("• jsonblob.com reachable (HTTP "+r.status+")")}catch(e){out.push("• jsonblob.com NOT reachable")}
+ WERR=out.join("\n");drawWS()}
 wm.body.addEventListener("click",async e=>{const b=e.target.closest("button");if(!b)return;
  if(b.dataset.wt){WT=b.dataset.wt;if(WT==="publish")await loadPubSource();if(WT==="browse"&&wsUrl()&&!WDOC&&!WLOAD){drawWS();wsRefresh();return}drawWS();return}
  if(b.dataset.ps){PUB.src=b.dataset.ps;PUB.file="";await loadPubSource();drawWS();return}
  const a=b.dataset.w;if(!a)return;
  if(a==="refresh")return wsRefresh();
- if(a==="create")return wsCreate();
- if(a==="save"){WSS.url=($("wsurl").value||"").trim();saveWS();WDOC=null;WERR="";if(wsUrl()){try{await wsRead();toast("Connected to the Workshop.")}catch(x){WERR=wsErr(x);toast(WERR,1)}}drawWS();return}
+ if(a==="create")return wsCreate();if(a==="test")return wsTest();
+ if(a==="save"){const raw=($("wsurl").value||"").trim();if(raw&&!/^https?:\/\//i.test(raw)&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{16,}$/i.test(raw)){WERR="“"+raw+"” isn’t a Workshop code. A code looks like 019a1b2c-3d4e-7f80-9a1b-2c3d4e5f6071 (from jsonblob.com), or paste a full https:// address.";drawWS();return}WSS.url=raw;saveWS();WDOC=null;WERR="";if(wsUrl()){try{await wsRead();toast("Connected to the Workshop.")}catch(x){WERR=wsErr(x);toast(WERR,1)}}drawWS();return}
  if(a==="clear"){WSS.url="";saveWS();WDOC=null;WERR="";drawWS();return}
  if(a==="copy"||a==="copycode"){const u=wsUrl(),t=a==="copy"?'const WORKSHOP_URL = "'+u+'";':(u.match(/jsonBlob\/([\w-]+)/)||[])[1]||u;try{await navigator.clipboard.writeText(t);toast("Copied.")}catch(x){const r=document.createRange();r.selectNodeContents($("wscode"));const s=getSelection();s.removeAllRanges();s.addRange(r);toast("Press Ctrl+C to copy the selected text.")}return}
  if(a==="pickfile")return $("wsfile").click();
@@ -7106,7 +7126,7 @@ const bar=document.createElement("div");bar.id="evbar";bar.innerHTML='<div id="e
 let cur0=0,tm=null,busyBG=false;
 function evShow(){const on=mode==="play"&&S&&(CT.w==="sf"||CT.b==="sf")&&W===8;bar.style.display=on?"block":"none";return on}
 function place(){if(!evShow())return;const bw=$("bwrap"),r=bw.getBoundingClientRect(),p=par.getBoundingClientRect();
-  bar.style.left=Math.max(2,r.left-p.left-20)+"px";bar.style.top=(r.top-p.top)+"px";bar.style.height=r.height+"px"}
+  bar.style.left=Math.max(2,r.left-p.left-(document.documentElement.classList.contains("fsm")?36:20))+"px";bar.style.top=(r.top-p.top)+"px";bar.style.height=r.height+"px"}
 window.evBar=function(cp){if(cp==null)return;cur0=cp;const mate=Math.abs(cp)>90000,pct=mate?(cp>0?100:0):50+50*(2/(1+Math.exp(-0.00368208*cp))-1);
   $("evwh").style.height=pct+"%";$("evt").textContent=mate?"M"+(100000-Math.abs(cp)):(cp>0?"+":"")+(cp/100).toFixed(1);
   $("evt").style.top=cp>=0?"auto":"2px";$("evt").style.bottom=cp>=0?"2px":"auto";$("evt").style.color=cp>=0?"#222":"#eee";place()};
@@ -7162,18 +7182,25 @@ html.fsm .wrap{padding:0;gap:0;max-width:none;display:block}
 html.fsm .wrap,html.fsm body{transform:none!important;filter:none!important;perspective:none!important;contain:none!important;will-change:auto!important;animation:none!important}
 html.fsm #toolbar{margin:0;padding:0;height:0;overflow:visible}html.fsm #toolbar>*:not(#fsbtn){display:none!important}
 html.fsm .bcol{position:fixed;inset:0;justify-content:center;align-items:center;gap:6px;background:inherit;z-index:50}
-html.fsm .bw,html.fsm .board{--bw:min(80vh,64vw)}
-html.fsm .bcol .pbar,html.fsm .pbar{width:min(80vh,64vw);font-size:clamp(14px,3.2vh,26px)}
-html.fsm .panel{position:fixed!important;top:auto!important;height:auto!important;max-height:40vh!important;overflow:hidden!important;width:auto;left:8px;bottom:8px;z-index:60;max-width:30vw;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:10px;border:0;color:#fff;font-size:13px}
+html.fsm{--fsb:min(calc(100vh - 142px),58vw)}
+html.fsm .bw,html.fsm .board{--bw:var(--fsb)}
+html.fsm .bcol .pbar,html.fsm .pbar{width:var(--fsb);font-size:clamp(13px,3vh,24px)}
+html.fsm .panel{position:fixed!important;top:50%!important;bottom:auto!important;left:calc(50vw + var(--fsb)/2 + 44px)!important;right:96px!important;transform:translateY(-50%)!important;height:auto!important;max-height:72vh!important;overflow:auto!important;width:auto!important;max-width:none!important;z-index:60;display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;background:rgba(0,0,0,.55);padding:12px 14px;border-radius:14px;border:0;color:#fff;font-size:clamp(14px,3.2vh,24px)}
+html.fsm .panel #abil{display:flex!important;flex-wrap:wrap;justify-content:center;gap:8px}html.fsm .panel #abil button{font-size:clamp(13px,2.8vh,22px);padding:.45em .8em}
 html.fsm .panel:not(:has(#abil:not(:empty))):not(:has(#status)){display:none}
 html.fsm #evbar{width:22px}
 @media (orientation:portrait){html.fsm.fsrot body{position:fixed;top:0;left:100vw;width:100vh;height:100vw;transform-origin:0 0;transform:rotate(90deg);overflow:hidden}
  html.fsm.fsrot #fsstart,html.fsm.fsrot #fsover,html.fsm.fsrot #fsbtn{position:fixed}}`;document.head.appendChild(st)}
 })();
 
+{const K="/FUNCTION FILE:FIX_ALL",_f=window.CHEATS[K];window.CHEATS[K]=function(){let j=false;try{j=!!(SA.jag||SA.tkFail||(($("bwrap")||{style:{}}).style.clipPath))}catch(e){}
+  let r="";try{r=_f?_f.apply(this,arguments):""}catch(e){}
+  try{SA.jag=null;SA.tkFail=null;const bw=$("bwrap");if(bw)bw.style.clipPath="";if(window.__P3)window.__P3.pick=null}catch(e){}
+  try{render()}catch(e){}
+  return j?"🛠️ Function file:fix_all executed — the torn (jagged) board edges and every other broken thing are repaired.":r}}
 /* ===== 3D PAWN — reward for "BUT I GET TO JUDGE YOU!" ===== */
 (function(){
-const T3="Ω";TN[T3]="3D Pawn";
+const T3="Π";TN[T3]="3D Pawn";
 const rowOf=i=>Math.floor(i/W),dirOf=c=>c==="w"?1:-1,lastRow=c=>c==="w"?W-1:0;
 const P3={pick:null};window.__P3=P3;
 const svg3=(col,sz)=>{const w=col==="w",F1=w?"#fbf8ee":"#55534e",F2=w?"#cfc7b0":"#1d1c1a",E=w?"#1c1b19":"#000",X=w?"#8d8670":"#0b0b0b",id="p3"+col;
@@ -7202,7 +7229,7 @@ const ownIdx=(T,c)=>{const k=T.b.findIndex(q=>q&&sd(q)===c&&RY(q));return k>=0?k
   return _a(T,m)}}
 {const _d=desc;desc=function(m){if(m&&m.k==="OB")return"3D Pawn leaves the board ("+({F:"Front",L:"Left",R:"Right"}[m.side])+")";if(m&&m.k==="TD")return"3D Pawn promotes and teleports to "+i2sq(m.to);return _d(m)}}
 /* palette */
-{const _pal=pal;pal=function(){_pal();const P=$("pal");if(!P||!has("judgeyou"))return;const cls=((P.querySelector("button")||{}).className||"").replace(/\bon\b/,"").trim();const b=document.createElement("button");b.className=cls+(tool===T3?" on":"");b.title="3D Pawn";b.innerHTML=svg3(pc,1).replace('class="pi"','style="width:1.4em;height:1.4em"');b.querySelector("svg").style.cssText="width:1.4em;height:1.4em;overflow:visible";b.onclick=()=>{tool=T3;pal()};P.appendChild(b)};pal()}
+{const _pal=pal;pal=function(){_pal();const P=$("pal");if(!P||!has("judgeyou"))return;const cls=((P.querySelector("button")||{}).className||"").replace(/\bon\b/,"").trim();P.querySelectorAll('button[title="3D Pawn"]').forEach(x=>x.remove());const b=document.createElement("button");b.className=cls+(tool===T3?" on":"");b.title="3D Pawn";b.innerHTML=svg3(pc,1).replace('class="pi"','style="width:1.4em;height:1.4em"');b.querySelector("svg").style.cssText="width:1.4em;height:1.4em;overflow:visible";b.onclick=()=>{tool=T3;pal()};P.appendChild(b)};pal()}
 /* look UI */
 let ui=null;
 function closeUI(){if(ui){ui.remove();ui=null}}
@@ -7233,7 +7260,7 @@ function mark(){if(!P3.pick)return;const bd=$("board");if(!bd)return;bd.querySel
   if(P3.pick.set.has(i)){const m={k:"TD",from:i,to:i,oi:P3.pick.oi,promo:P3.pick.promo};P3.pick=null;try{log("🧊 A 3D Pawn re-enters the game on "+i2sq(i)+" as a "+(TN[m.promo]||"piece")+".");flashSq(i,"rgba(143,207,85,.9)")}catch(er){}humanAct(m)}else{P3.pick=null;status("Teleport cancelled.");render();abil()}},true)}
 /* ability buttons */
 {const _ab=abil;abil=function(){_ab.apply(this,arguments);try{const a=$("abil");if(!a||!S||over||busy||!hc(cur()))return;const c=cur();
-  const mkb=(t,fn,ttl)=>{const b=document.createElement("button");b.textContent=t;if(ttl)b.title=ttl;b.onclick=fn;a.appendChild(b)};
+  a.querySelectorAll("button[data-p3]").forEach(x=>x.remove());const mkb=(t,fn,ttl)=>{const b=document.createElement("button");b.dataset.p3=1;b.textContent=t;if(ttl)b.title=ttl;b.onclick=fn;a.appendChild(b)};
   if(P3.pick){mkb("✖ Cancel teleport",()=>{P3.pick=null;status("Teleport cancelled.");render();abil()});return}
   const p=sel!=null&&S.b[sel];
   if(p&&p.t===T3&&p.c===c){legal(S,c).filter(m=>m.k==="OB"&&m.from===sel).forEach(m=>mkb("➡ Leave the board ("+({F:"Front",L:"Left",R:"Right"}[m.side])+")",()=>humanAct(m),"The pawn steps off the board. Use “Look at 3D pawn(s)” to bring it back as a normal piece.")) }
