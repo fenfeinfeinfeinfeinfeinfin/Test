@@ -455,6 +455,7 @@ function initSF(){try{const E=SFU[SFI],u=typeof E==="string"?E:E.u;let w;
   if(l==="uciok")w.postMessage("isready");
   else if(l==="readyok"){sf=w;setElo();$("eng").innerHTML="<small>Engines ready: “"+(SFN||"Stockfish")+"” plays standard chess and also these custom pieces, seen as stand-ins (Cannon/Bomber = Queen, Soldier = Pawn, Helicopter = Knight, General = King, Missile launcher = Bishop, Tank = Rook); other custom rules fall back to the built-in search · “Built-in bot” always uses this page’s own search</small>"}
   else if(l.startsWith("info")&&l.includes(" score ")&&sfRes){if(sfMP){const mpn=/multipv (\d+)/.exec(l),pv0=/ pv (\S+)/.exec(l),cp0=/score cp (-?\d+)/.exec(l),mt0=/score mate (-?\d+)/.exec(l);if(mpn&&pv0&&(cp0||mt0))sfMP[mpn[1]]={mv:pv0[1],cp:mt0?(+mt0[1]>0?1:-1)*(100000-Math.abs(+mt0[1])):+cp0[1]};return}const d=/depth (\d+)/.exec(l),cp=/score cp (-?\d+)/.exec(l),mt=/score mate (-?\d+)/.exec(l),pv=/ pv (.+)$/.exec(l),g=sfC==="w"?1:-1;
+   try{evBar(mt?(+mt[1]>0?1:-1)*g*(100000-Math.abs(+mt[1])):cp?g*(+cp[1]):null)}catch(e){}
    if(mt){const n=+mt[1];mateShow(n>0?sfC:other(sfC),Math.abs(n))}else mateShow();
    $("think").innerHTML="Stockfish · depth "+(d?d[1]:"?")+" · eval "+(cp?(g*cp[1]/100>0?"+":"")+(g*cp[1]/100).toFixed(2):mt?"mate":"?")+"<br>Line: "+(pv?pv[1].split(" ").slice(0,4).join(" "):"")}
   else if(l.startsWith("bestmove")&&sfRes){const f=sfRes;sfRes=null;f(l.split(" ")[1])}};
@@ -484,6 +485,7 @@ function fenOf(S,c){const r=[],B=S.b;for(let y=7;y>=0;y--){let s="",n=0;for(let 
 function desc(m){const p=S.b[m.from],y=p?(SYM[p.t]||p.t):"";return m.k==="m"?(m.cr?(m.to>m.from?"O-O":"O-O-O"):y+" "+i2sq(m.from)+"→"+i2sq(m.to)+(m.promo?"="+m.promo.toUpperCase():"")):m.k==="s"?"Swoon "+i2sq(m.to):m.k==="R"&&m.to!=null?"Rude Buster "+i2sq(m.to):m.k==="M"&&m.to!=null?"Missile "+i2sq(m.to):{I:"Iceshock",P:"Heal Prayer",Y:"Sleep Mist",A:"Sleep Mist (all)",G:"Snowgrave",x:"X-Slash",a:"Anti-Check",X:"Kris X Slash",D:"Defend",R:"Rude Buster",H:"Heal",F:"Defend",M:"Missile",S:"Shoot "+(m.to!=null?i2sq(m.to):""),e:"End turn",K:"Queen cannon",g:"Give to Ransom",W:"Rise",Z:"Necromancy",V:"Vampire bite",L:"Raise zombies",B:"Bomb",Q:"FRIENDs",U:"Rushdown"}[m.k]||"an ability"}
 const same=(a,b)=>a.k===b.k&&a.from===b.from&&a.to===b.to&&a.promo===b.promo;
 let sfMP=null;
+async function sfScore(Sx,c,sm,ms){sfC=c;const T=await new Promise(res=>{sfMP={};const cb=()=>res(sfMP);sfRes=cb;sf.postMessage("setoption name Skill Level value 20");sf.postMessage("setoption name UCI_LimitStrength value false");sf.postMessage("setoption name MultiPV value 1");sf.postMessage("position fen "+fenOf(Sx,c));sf.postMessage("go movetime "+ms+(sm?" searchmoves "+sm:""));setTimeout(()=>{if(sfRes===cb){sfRes=null;res(null)}},ms+5000)});sfMP=null;const e=T&&T["1"];return e?e.cp:null}
 async function sfFish(c,L){sfC=c;const mp=await new Promise(res=>{sfMP={};const cb=()=>res(sfMP);sfRes=cb;sf.postMessage("setoption name Skill Level value 20");sf.postMessage("setoption name UCI_LimitStrength value false");const sm=[...new Set(L.filter(m=>m.k==="m").map(sfUci))];sf.postMessage("setoption name MultiPV value "+Math.max(1,Math.min(sm.length,30)));sf.postMessage("position fen "+fenOf(S,c));sf.postMessage("go movetime 1000 searchmoves "+sm.join(" "));setTimeout(()=>{if(sfRes===cb){sfRes=null;res(null)}},6000)});
  sf.postMessage("setoption name MultiPV value 1");const T=sfMP;sfMP=null;if(!mp||!T)return null;
  const a=Object.values(T).map(e=>({e,m:L.find(m=>m.k==="m"&&sfUci(m)===e.mv)})).filter(x=>x.m);if(!a.length)return null;
@@ -601,11 +603,14 @@ $("start").onclick=()=>{
  render();if(!fin())loop()};
 // ---- game review ----
 const LBL=[["Best",15,"#26a69a"],["Excellent",35,"#66bb6a"],["Good",80,"#9ccc65"],["Inaccuracy",160,"#ffca28"],["Mistake",320,"#ff9800"],["Blunder",1e12,"#e53935"]];
+const bsz8=()=>W===8;
 $("revx").onclick=()=>{$("rev").style.display="none"};
 $("revb").onclick=async()=>{if(!hist.length)return status("Play some moves first.");if(busy&&!over)return;
- const R=$("rev");R.style.display="grid";const body=$("rbody"),rows=[];
- for(let k=0;k<hist.length;k++){body.textContent="Analysing move "+(k+1)+"/"+hist.length+" (built-in engine)…";await sleep(0);
-  const h=hist[k],r=ownPick(h.S0,legal(h.S0,h.c),0),best=r[0].s,e=r.find(x=>same(x.m,h.m)),pl=e?e.s:best,loss=Math.max(0,h.c==="w"?best-pl:pl-best);
+ const R=$("rev");R.style.display="grid";const body=$("rbody"),rows=[];const useSF=!!sf&&bsz8()&&hist.every(h=>h.S0&&sfReadable(h.S0));
+ for(let k=0;k<hist.length;k++){body.textContent="Analysing move "+(k+1)+"/"+hist.length+" ("+(useSF?(SFN||"Stockfish"):"built-in engine")+")…";await sleep(0);
+  const h=hist[k];let best,pl;if(useSF&&h.m.k==="m"){const b=await sfScore(h.S0,h.c,null,150),p=await sfScore(h.S0,h.c,sfUci(h.m),150);if(b!=null&&p!=null){const sg=h.c==="w"?1:-1;best=sg*b;pl=sg*Math.min(p,b)}}
+  if(best===undefined){const r=ownPick(h.S0,legal(h.S0,h.c),0);best=r[0].s;const e=r.find(x=>same(x.m,h.m));pl=e?e.s:best}
+  const loss=Math.max(0,h.c==="w"?best-pl:pl-best);
   const T=S,lb=LBL.find(x=>loss<=x[1]);S.b&&0;rows.push({h,ev:Math.max(-800,Math.min(800,pl)),loss,lb,txt:(()=>{const q=h.S0.b[h.m.from],y=q?(SYM[q.t]||q.t):"";return h.m.k==="m"?(h.m.cr?(h.m.to>h.m.from?"O-O":"O-O-O"):y+" "+i2sq(h.m.from)+"→"+i2sq(h.m.to)+(h.m.promo?"="+h.m.promo.toUpperCase():"")):({s:"Swoon",x:"X-Slash",a:"Anti-Check",X:"Kris X Slash",D:"Defend",R:"Rude Buster",H:"Heal",F:"Defend",M:"Missile",S:"Shoot",e:"End turn",K:"Queen cannon",g:"Give to Ransom",W:"Rise",Z:"Necromancy",V:"Vampire bite",L:"Raise zombies",I:"Iceshock",P:"Heal Prayer",Y:"Sleep Mist",A:"Sleep Mist (all)",G:"Snowgrave",B:"Bomb",Q:"FRIENDs",U:"Rushdown",CH:"h4x",CM:"m0rph",CS:"sw1tch",CY:"Team c00lk1dd"})[h.m.k]||"Ability"})()})}
  const acc=c=>{const x=rows.filter(r=>r.h.c===c);return x.length?Math.round(100*Math.exp(-(x.reduce((a,r)=>a+r.loss,0)/x.length)/220)):"–"};
  const cnt=(c,n)=>rows.filter(r=>r.h.c===c&&r.lb[0]===n).length;
@@ -4240,7 +4245,7 @@ const got=()=>{try{return JSON.parse(LSg(AK)||"[]")}catch(e){return[]}};
 window.achUnlock=id=>{const g=got();if(!g.includes(id)){g.push(id);LSs(AK,JSON.stringify(g));try{window.dispatchEvent(new Event("cfa-ach"))}catch(e){}return true}return false};
 window.achHas=id=>got().includes(id);
 const am=popup("achmodal");
-function drawAch(){const g=got(),L=window.ACHIEVEMENTS;
+function drawAch(){const g=got(),L=window.ACHIEVEMENTS.filter(a=>!(["gauntlet","badend","judgeyou"].includes(a.id)&&!g.includes("judge"))&&!(a.id==="judgeyou"&&!g.includes("badend")));
  am.body.innerHTML='<h3>🏆 Achievements</h3>'+(L.length?'<p class="sub">'+L.filter(a=>g.includes(a.id)).length+" / "+L.length+" unlocked</p>"+L.map(a=>{const on=g.includes(a.id);return'<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid rgba(127,127,127,.3);'+(on?"":"opacity:.55")+'"><span style="font-size:1.6em">'+(on?(a.icon||"🏆"):"🔒")+'</span><span><b>'+a.name+'</b><br><small>'+(on||!a.secret?a.desc:"???")+"</small></span></div>"}).join(""):'<p class="sub">No achievements yet — they’ll show up here later.</p>')}
 /* ---- buttons ---- */
 const tb=$("toolbar");if(tb){const mk=(id,txt,title,fn)=>{const b=document.createElement("button");b.type="button";b.id=id;b.textContent=txt;b.title=title;b.onclick=fn;tb.appendChild(b)};
@@ -6300,7 +6305,7 @@ async function saTackle(g){
     await sleep(750);
     const res=await saLockPuzzle(g);clean();render();if(res==="abort"||!alive(g))return;
     if(res===true){                                   // WIN: Romeo is captured twice
-      try{await ggSwing(ki,romIdx(S.b))}catch(e){}sfx("hitc");setTimeout(()=>{sfx("stun");saSay("Romeo","WHAT?!",800,1800)},450);log("🟩 You popped all 15 locks — Romeo is captured twice!");
+      try{await ggSwing(ki,romIdx(S.b))}catch(e){}sfx("hitc");setTimeout(()=>{sfx("stun");saSay("Romeo","WHAT?!",800,1800)},450);log(SA.asRomeo?"🟥 You failed the locks — Romeo is captured twice!":"🟩 You popped all 15 locks — Romeo is captured twice!");
       const r2=romIdx(S.b);if(r2>=0)S.b[r2]=null;saCaptured(S,2,1900);render();if(SA.flashI!=null){flashSq(SA.flashI,"rgba(255,23,68,.9)");SA.flashI=null}
     }else{                                            // FAIL: crack, King stunned 5 turns, every piece −2.5 hearts
       sfx("hitc");setTimeout(()=>{sfx("hall");saSay("Romeo","ONE MORE UNGRATEFUL LOSER BURIED AWAY!",3800,2200)},450);
@@ -6308,7 +6313,7 @@ async function saTackle(g){
       try{document.body.animate([{transform:"translate(0,0)"},{transform:"translate(-10px,6px)"},{transform:"translate(9px,-7px)"},{transform:"translate(-6px,-5px)"},{transform:"translate(0,0)"}],{duration:500})}catch(e){}
       await sleep(520);if(!alive(g))return;
       const dead=[],hurt=[];S.b.forEach((p,i)=>{if(p&&p.c==="w"&&p.t!=="k"&&!OBJ(p)){const sn=saSnap(i);(dealHP(S,i,2.5)?dead:hurt).push(sn)}});
-      kq.stun=5;log("🟥 You failed the locks — a massive crack tears the board, your King is stunned for 5 turns and every piece takes 2.5 hearts!");
+      kq.stun=5;log(SA.asRomeo?"🟩 You popped all 30 locks — a massive crack tears the board, the King is stunned for 5 turns and every White piece takes 2.5 hearts!":"🟥 You failed the locks — a massive crack tears the board, your King is stunned for 5 turns and every piece takes 2.5 hearts!");
       try{dead.forEach((sn,n)=>{if(sn)saGhost(sn,"kill",{mute:n>0})});hurt.forEach(sn=>{if(sn)saGhost(sn,"hurt")})}catch(e){console.error(e)}
       render()}
   }catch(e){console.error(e)}finally{clean()}}
@@ -7048,12 +7053,27 @@ window.CHEATS["ROMEOBADCUTSCENE"]=function(){if(SA.cut)return{msg:"A cutscene is
   const upd=()=>{try{const on=has("badend")&&$("sa")&&$("sa").checked;lab.style.display=on?"":"none";if(!on&&$("saRom"))$("saRom").checked=false}catch(e){}};
   setInterval(upd,800);window.addEventListener("cfa-ach",upd);upd();
   const st=$("start");
-  if(st){st.addEventListener("click",()=>{try{if($("saRom")&&$("saRom").checked&&$("sa").checked&&has("badend")){$("ctW").value="bot";$("ctB").value="human";window.__romNext=true}else window.__romNext=false}catch(e){}},true);
+  if(st){st.addEventListener("click",()=>{try{{SA.jag=null;SA.tkFail=null;const b0=$("bwrap");if(b0)b0.style.clipPath=""}if($("saRom")&&$("saRom").checked&&$("sa").checked&&has("badend")){$("ctW").value="bot";$("ctB").value="human";window.__romNext=true}else window.__romNext=false}catch(e){}},true);
    st.addEventListener("click",()=>{setTimeout(()=>{try{SA.asRomeo=!!(window.__romNext&&SA.on&&mode==="play");if(SA.asRomeo){me="w";SA.finalUsed=true;log("🟥 You are Romeo. Capture all of White's pieces — or detonate the King once he is alone. Don't be captured "+NEED+" times!");render()}}catch(e){console.error(e)}},0)})}}
 /* White is the built-in bot: it likes shooting Romeo with its Cannons */
 {const _bp=botPick;botPick=async function(){if(SA.on&&SA.asRomeo&&cur()==="w"&&S&&!over){const sc=legal(S,"w").filter(m=>m.k==="SC");if(sc.length&&Math.random()<.7){status("White is aiming…");await sleep(700);return sc[rnd(sc.length)]}}return _bp.apply(this,arguments)}}
 /* the bot can't pop locks: it wins the tackle puzzle half of the time */
-{const _lp=saLockPuzzle;saLockPuzzle=function(g,n,s){if(SA.asRomeo)return new Promise(r=>setTimeout(()=>r(Math.random()<.5),1800));return _lp.apply(this,arguments)}}
+{const _lp=saLockPuzzle;saLockPuzzle=async function(g,n,s){if(!SA.asRomeo)return _lp.apply(this,arguments);
+  const r=await _lp.call(this,g,30,30);if(r==="abort")return r;
+  const ok=r===true;SA.tkFail=SA.tkFail||{w:0,b:0};if(ok)SA.tkFail.w++;else SA.tkFail.b++;
+  if(ok&&SA.tkFail.w===2)setTimeout(()=>jagSide("w"),1400);if(!ok&&SA.tkFail.b===2)setTimeout(()=>jagSide("b"),1400);
+  return !ok}}                       /* saTackle: true = White escaped (Romeo captured twice) */
+function jagApply(){const bw=$("bwrap");if(!bw)return;const J=SA.jag||{},pts=[],n=14,r=()=>(Math.random()*6).toFixed(1);
+  for(let i=0;i<=n;i++)pts.push((i/n*100).toFixed(1)+"% "+(J.b&&i>0&&i<n?r():0)+"%");
+  pts.push("100% 0%");pts.push("100% 100%");
+  for(let i=n;i>=0;i--)pts.push((i/n*100).toFixed(1)+"% "+(100-(J.w&&i>0&&i<n?+r():0)).toFixed(1)+"%");
+  pts.push("0% 100%");bw.style.clipPath="polygon("+pts.join(",")+")"}
+function jagSide(side){const bw=$("bwrap");if(!bw||!SA.on||over)return;SA.jag=SA.jag||{};if(SA.jag[side])return;SA.jag[side]=1;jagApply();
+  try{sfx("hitc");ggShake(12)}catch(e){}
+  const R=bw.getBoundingClientRect();for(let i=0;i<10;i++){const f=document.createElement("div"),sz=14+Math.random()*26;
+    f.style.cssText="position:fixed;z-index:9999;pointer-events:none;background:"+(i%2?"#b58863":"#f0d9b5")+";width:"+sz+"px;height:"+sz*.7+"px;clip-path:polygon(0 30%,55% 0,100% 60%,35% 100%);left:"+(R.left+Math.random()*R.width)+"px;top:"+(side==="w"?R.bottom-8:R.top)+"px";document.body.appendChild(f);
+    f.animate([{transform:"translateY(0) rotate(0)",opacity:1},{transform:"translateY("+(side==="w"?1:-1)*(80+Math.random()*120)+"px) rotate("+(Math.random()*540-270)+"deg)",opacity:0}],{duration:1100,easing:"ease-in"}).onfinish=()=>f.remove()}
+  log(side==="w"?"💥 White failed to escape twice — White's side of the board is torn apart.":"💥 You failed the locks twice — your side of the board is torn apart.")}
 /* while Romeo holds a piece he must keep holding it or crush it */
 {const _l=legal;legal=function(T,c){const L=_l(T,c);if(!(SA.on&&SA.asRomeo&&c==="b"&&T===S&&hc("b")))return L;
   const B=T.b,ri=romIdx(B);if(ri<0)return L;
@@ -7074,7 +7094,151 @@ window.CHEATS["ROMEOBADCUTSCENE"]=function(){if(SA.cut)return{msg:"A cutscene is
   mkb("🟫 /function romeo:shapeshift"+cd(SA.cd4),"SS",SA.cd4>0||wp<2||SA.rushOn||SA.ssOn,"Shapeshift into a Cannon")}catch(e){console.error(e)}}}
 /* the result is flipped: 20 captures = you lose, the detonation = you win */
 {const _cs=saCutscene;saCutscene=async function(){if(SA.asRomeo&&SA.on&&!over){SA.cutPending=false;SA.cut=false;busy=false;SA.fin=true;end("💀 Romeo was captured "+NEED+" times — the Admin is stopped. You lose.");return}return _cs.apply(this,arguments)}}
-{const _e=end;end=function(t){if(SA.asRomeo&&/Romeo detonated your King/.test(String(t)))t="🟥 You detonated the King — White is wiped out. You win! 🎉";return _e(t)}}
+{const _e=end;end=function(t){if(SA.asRomeo&&/Romeo detonated your King/.test(String(t))){t="🟥 You detonated the King — White is wiped out. You win! 🎉";try{if(achUnlock("judgeyou")&&window.STQ)STQ.toast('<span style="font-size:30px;line-height:1">🟥</span><span>Achievement unlocked: <b>BUT I GET TO JUDGE YOU!</b><br><small>The 3D Pawn is unlocked.</small></span>',9000)}catch(e){}}return _e(t)}}
+{const A=window.ACHIEVEMENTS=window.ACHIEVEMENTS||[],j=A.find(a=>a.id==="judge");
+ if(!A.some(a=>a.id==="judgeyou"))A.push({id:"judgeyou",name:"BUT I GET TO JUDGE YOU!",icon:j?j.icon:"🟥",get desc(){return has("judgeyou")?"Complete! The 3D Pawn is unlocked.":"???"}})}
+
+
+/* ===== EVALUATION BAR + FULL-SCREEN MODE ===== */
+(function(){
+const par=$("bwrap").parentNode;par.style.position="relative";
+const bar=document.createElement("div");bar.id="evbar";bar.innerHTML='<div id="evbk"></div><div id="evwh"></div><span id="evt">0.0</span>';par.appendChild(bar);
+let cur0=0,tm=null,busyBG=false;
+function evShow(){const on=mode==="play"&&S&&(CT.w==="sf"||CT.b==="sf")&&W===8;bar.style.display=on?"block":"none";return on}
+function place(){if(!evShow())return;const bw=$("bwrap"),r=bw.getBoundingClientRect(),p=par.getBoundingClientRect();
+  bar.style.left=Math.max(2,r.left-p.left-20)+"px";bar.style.top=(r.top-p.top)+"px";bar.style.height=r.height+"px"}
+window.evBar=function(cp){if(cp==null)return;cur0=cp;const mate=Math.abs(cp)>90000,pct=mate?(cp>0?100:0):50+50*(2/(1+Math.exp(-0.00368208*cp))-1);
+  $("evwh").style.height=pct+"%";$("evt").textContent=mate?"M"+(100000-Math.abs(cp)):(cp>0?"+":"")+(cp/100).toFixed(1);
+  $("evt").style.top=cp>=0?"auto":"2px";$("evt").style.bottom=cp>=0?"2px":"auto";$("evt").style.color=cp>=0?"#222":"#eee";place()};
+{const _r=render;render=function(){_r.apply(this,arguments);try{if(!evShow())return;place();if(!hist.length)evBar(0);
+  clearTimeout(tm);tm=setTimeout(async()=>{try{if(busyBG||!sf||sfRes||busy||over||mode!=="play"||!S||CT[cur()]!=="human"||!sfReadable(S)||!sfSane(S,cur()))return;busyBG=true;
+    const c=cur(),cp=await sfScore(S,c,null,250);if(cp!=null&&S&&cur()===c)evBar(c==="w"?cp:-cp)}catch(e){}busyBG=false},450)}catch(e){}}}
+addEventListener("resize",place);
+
+/* ---------- full screen ---------- */
+const de=document.documentElement;let on=false,hideRes=false;
+const mk=(tag,id,txt)=>{const e=document.createElement(tag);e.id=id;if(txt)e.textContent=txt;return e};
+const btn=mk("button","fsbtn","⛶ Full screen"),stb=mk("button","fsstart","START"),ov=mk("div","fsover");
+ov.innerHTML='<div id="fswin"></div><div id="fstxt"></div><div class="fsrow"><button id="fsre">Rematch</button><button id="fsx" title="Hide this until the next match ends">✕</button></div>';
+document.body.appendChild(stb);document.body.appendChild(ov);
+const fsRow=document.querySelector("#start")&&$("start").parentNode;const fsHome=()=>{if(fsRow)fsRow.appendChild(btn);else document.body.appendChild(btn)};fsHome();
+function startMatch(){try{if(mode==="play")$("back").click()}catch(e){}setTimeout(()=>{try{$("start").click()}catch(e){}},80)}
+async function enter(){on=true;hideRes=false;de.classList.add("fsm");document.body.appendChild(btn);ov.style.display="none";btn.textContent="⛶ Exit";
+  try{if(de.requestFullscreen)await de.requestFullscreen()}catch(e){}
+  try{if(screen.orientation&&screen.orientation.lock)await screen.orientation.lock("landscape")}catch(e){}
+  setTimeout(()=>{de.classList.toggle("fsrot",innerHeight>innerWidth);place()},500);
+  const playing=mode==="play"&&S&&!over;stb.style.display=playing?"none":"block";stb.style.opacity=1;setTimeout(place,300)}
+function leave(){on=false;de.classList.remove("fsm","fsrot");fsHome();btn.textContent="⛶ Full screen";stb.style.display="none";ov.style.display="none";
+  try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen()}catch(e){}try{if(screen.orientation&&screen.orientation.unlock)screen.orientation.unlock()}catch(e){}setTimeout(place,300)}
+btn.onclick=()=>on?leave():enter();
+stb.onclick=async()=>{stb.style.transition="opacity .5s,transform .5s";stb.style.opacity=0;stb.style.transform="translate(-50%,-50%) scale(1.4)";await sleep(550);stb.style.display="none";stb.style.transform="";startMatch()};
+$("fsx")&&($("fsx").onclick=()=>{ov.style.display="none";hideRes=true});
+$("fsre").onclick=()=>{ov.style.display="none";hideRes=false;startMatch()};
+function showRes(t){if(!on||hideRes)return;t=String(t||"");const w=/(white|black)\s+(wins|won|win)\b/i.exec(t)||/(wins?|won)\b[^.]*?(white|black)/i.exec(t);let big="";
+  if(/draw|stalemate|tie|repetition/i.test(t)&&!w)big="Draw";else if(w){const c=(w[1]||w[2]).toLowerCase();big=(c==="white"?"⚪ White":"⚫ Black")+" won"}
+  $("fswin").textContent=big||"Match over";$("fstxt").textContent=t;ov.style.display="flex"}
+{const _e=end;end=function(t){const r=_e.apply(this,arguments);if(on){hideRes=false;setTimeout(()=>showRes(t),900)}return r}}
+{const _s=$("start");_s.addEventListener("click",()=>{if(on){hideRes=false;ov.style.display="none";stb.style.display="none";setTimeout(place,400)}})}
+document.addEventListener("fullscreenchange",()=>{if(on&&!document.fullscreenElement&&!de.classList.contains("fsrot")){/* user left browser fullscreen */}});
+{const st=document.createElement("style");st.textContent=`
+#evbar{position:absolute;width:14px;z-index:5;display:none;border:2px solid #555;border-radius:4px;overflow:hidden;background:#111}
+#evbk{position:absolute;inset:0;background:#222}
+#evwh{position:absolute;left:0;right:0;bottom:0;height:50%;background:#f2f2f2;transition:height .45s}
+#evt{position:absolute;left:50%;transform:translateX(-50%) rotate(-90deg);transform-origin:center;font:700 10px system-ui;white-space:nowrap;pointer-events:none}
+#fsbtn{margin-left:6px}
+html.fsm #fsbtn{position:fixed;right:12px;bottom:12px;z-index:100002;font-size:15px;padding:10px 14px;opacity:.85}
+#fsstart{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100001;display:none;font:700 clamp(40px,9vw,110px)/1 "Determination Mono",system-ui;padding:.35em .9em;border:5px solid #fff;border-radius:18px;background:#1b5e20;color:#fff;cursor:pointer;box-shadow:0 0 40px rgba(0,0,0,.7)}
+#fsover{position:fixed;inset:0;z-index:100000;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.72);color:#fff;text-align:center;padding:20px}
+#fswin{font:700 clamp(34px,8vw,90px)/1.05 "Determination Mono",system-ui}
+#fstxt{font-size:clamp(14px,2.4vw,22px);opacity:.85;max-width:80vw}
+#fsover .fsrow{display:flex;gap:16px}
+#fsover button{font:700 clamp(20px,3.4vw,36px) system-ui;padding:.5em 1.1em;border-radius:14px;border:3px solid #fff;background:#1565c0;color:#fff;cursor:pointer}
+#fsover #fsx{background:#555;padding:.5em .8em}
+html.fsm{overflow:hidden}
+html.fsm body{overflow:hidden;margin:0}
+html.fsm h1,html.fsm #setupUI,html.fsm .panel>*:not(#abil):not(#status),html.fsm .row.btns,html.fsm #log,html.fsm details{display:none!important}
+html.fsm .wrap{padding:0;gap:0;max-width:none;display:block}
+html.fsm .wrap,html.fsm body{transform:none!important;filter:none!important;perspective:none!important;contain:none!important;will-change:auto!important;animation:none!important}
+html.fsm #toolbar{margin:0;padding:0;height:0;overflow:visible}html.fsm #toolbar>*:not(#fsbtn){display:none!important}
+html.fsm .bcol{position:fixed;inset:0;justify-content:center;align-items:center;gap:6px;background:inherit;z-index:50}
+html.fsm .bw,html.fsm .board{--bw:min(80vh,64vw)}
+html.fsm .bcol .pbar,html.fsm .pbar{width:min(80vh,64vw);font-size:clamp(14px,3.2vh,26px)}
+html.fsm .panel{position:fixed!important;top:auto!important;height:auto!important;max-height:40vh!important;overflow:hidden!important;width:auto;left:8px;bottom:8px;z-index:60;max-width:30vw;background:rgba(0,0,0,.55);padding:6px 8px;border-radius:10px;border:0;color:#fff;font-size:13px}
+html.fsm .panel:not(:has(#abil:not(:empty))):not(:has(#status)){display:none}
+html.fsm #evbar{width:22px}
+@media (orientation:portrait){html.fsm.fsrot body{position:fixed;top:0;left:100vw;width:100vh;height:100vw;transform-origin:0 0;transform:rotate(90deg);overflow:hidden}
+ html.fsm.fsrot #fsstart,html.fsm.fsrot #fsover,html.fsm.fsrot #fsbtn{position:fixed}}`;document.head.appendChild(st)}
+})();
+
+/* ===== 3D PAWN — reward for "BUT I GET TO JUDGE YOU!" ===== */
+(function(){
+const T3="Ω";TN[T3]="3D Pawn";
+const rowOf=i=>Math.floor(i/W),dirOf=c=>c==="w"?1:-1,lastRow=c=>c==="w"?W-1:0;
+const P3={pick:null};window.__P3=P3;
+const svg3=(col,sz)=>{const w=col==="w",F1=w?"#fbf8ee":"#55534e",F2=w?"#cfc7b0":"#1d1c1a",E=w?"#1c1b19":"#000",X=w?"#8d8670":"#0b0b0b",id="p3"+col;
+ let ex="";for(let k=10;k>=1;k--)ex+='<use href="#'+id+'s" x="'+(k*1.5)+'" y="'+(k*1.1)+'" fill="'+X+'" stroke="'+E+'" stroke-width=".6"/>';
+ return '<svg class="pi" viewBox="0 0 100 100" style="width:92%;height:92%;overflow:visible;transform:perspective(200px) rotateY(-22deg) rotateX(10deg);filter:drop-shadow(0 3px 2px rgba(0,0,0,.45))"><defs><linearGradient id="'+id+'g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="'+F1+'"/><stop offset="1" stop-color="'+F2+'"/></linearGradient><g id="'+id+'s"><path d="M37 26a13 13 0 1 0 26 0a13 13 0 1 0-26 0z"/><path d="M40 38h20l-1.5 9c9 5 14 15 15 29H26.500c1-14 6-24 15-29z"/><path d="M22 76h56v10H22z"/></g></defs>'+ex+'<use href="#'+id+'s" fill="url(#'+id+'g)" stroke="'+E+'" stroke-width="1.6"/><ellipse cx="45" cy="22" rx="4" ry="3" fill="#fff" opacity=".7"/><path d="M30 78h40" stroke="'+E+'" stroke-width=".8" opacity=".5"/>'+(sz?'':'<text x="64" y="16" font-size="22" font-weight="900" fill="#29b6f6" stroke="#012" stroke-width="1.2" paint-order="stroke" font-family="system-ui">3D</text>')+'</svg>'};
+{const _ph=ph;ph=function(p){if(p&&p.type===T3)return svg3(p.color,0);return _ph(p)}}
+{const _at=att;att=function(S,i){const p=S.b[i];if(p&&p.t===T3){const f=i%W,r=rowOf(i),d=dirOf(p.c),o=[];[[-1,d],[1,d],[-1,0],[1,0]].forEach(([x,y])=>{const a=f+x,e=r+y;if(a>=0&&a<W&&e>=0&&e<W)o.push(a+W*e)});return o}return _at.apply(this,arguments)}}
+const capOK=(S,q,c)=>q&&q.c!==c&&!RY(q)&&!OBJ(q)&&!q.dn;
+const sqOK=(S,j)=>j!==S.bal&&!(S.fq&&S.fq[j]);
+function tdSquares(S,o){const B=S.b,c=o.c,out=[];for(let j=0;j<W*W;j++){const onLast=rowOf(j)===lastRow(c);if(o.side==="F"?!onLast:onLast)continue;if(!sqOK(S,j))continue;const q=B[j];if(!q||capOK(S,q,c))out.push(j)}return out}
+{const _ps=pseudo;pseudo=function(S,c){let out=_ps.apply(this,arguments);const B=S.b;
+  if(!B.some(q=>q&&q.t===T3)&&!(S.ob&&S.ob.length))return out;
+  out=out.filter(m=>!(m.from!=null&&m.k==="m"&&B[m.from]&&B[m.from].t===T3));
+  if(S.heli!=null||S.eh!=null)return out;
+  const add=m=>out.push(m);
+  for(let i=0;i<W*W;i++){const p=B[i];if(!p||p.t!==T3||sd(p)!==c||ina(p))continue;const f=i%W,r=rowOf(i),d=dirOf(c);
+   if(r+d>=0&&r+d<W){const n=i+W*d;if(!B[n]&&sqOK(S,n))add({k:"m",from:i,to:n});for(const x of[-1,1]){const a=f+x;if(a>=0&&a<W){const j=n+x,q=B[j];if(sqOK(S,j)&&capOK(S,q,c))add({k:"m",from:i,to:j})}}}
+   else add({k:"OB",from:i,side:"F"});
+   for(const x of[-1,1]){const a=f+x;if(a>=0&&a<W){const j=i+x,q=B[j];if(sqOK(S,j)&&(!q||capOK(S,q,c)))add({k:"m",from:i,to:j})}else add({k:"OB",from:i,side:x<0?"L":"R"})}}
+  if(S.ob&&S.ob.length&&!hc(c)){S.ob.forEach((o,oi)=>{if(o.c!==c)return;const sq=tdSquares(S,o).sort(()=>Math.random()-.5).slice(0,14);sq.forEach(j=>add({k:"TD",from:j,to:j,oi,promo:"q"}))})}
+  return out}}
+const ownIdx=(T,c)=>{const k=T.b.findIndex(q=>q&&sd(q)===c&&RY(q));return k>=0?k:T.b.findIndex(q=>q&&sd(q)===c)};
+{const _a=apply;apply=function(T,m){
+  if(m&&m.k==="OB"){const c=T.pat[T.pi],B=T.b,p=B[m.from];if(p){(T.ob=T.ob||[]).push({id:p.id,c:p.c,side:m.side,sh:p.sh||1});B[m.from]=null}return _a(T,{k:"e",from:ownIdx(T,c)})}
+  if(m&&m.k==="TD"){const c=T.pat[T.pi],o=(T.ob||[])[m.oi];if(!o)return _a(T,{k:"e",from:ownIdx(T,c)});T.ob.splice(m.oi,1);const np=mk(m.promo||"q",o.c,o.sh||1);np.mv=1;np.id=o.id;T.b[m.to]=np;return _a(T,{k:"e",from:m.to})}
+  return _a(T,m)}}
+{const _d=desc;desc=function(m){if(m&&m.k==="OB")return"3D Pawn leaves the board ("+({F:"Front",L:"Left",R:"Right"}[m.side])+")";if(m&&m.k==="TD")return"3D Pawn promotes and teleports to "+i2sq(m.to);return _d(m)}}
+/* palette */
+{const _pal=pal;pal=function(){_pal();const P=$("pal");if(!P||!has("judgeyou"))return;const cls=((P.querySelector("button")||{}).className||"").replace(/\bon\b/,"").trim();const b=document.createElement("button");b.className=cls+(tool===T3?" on":"");b.title="3D Pawn";b.innerHTML=svg3(pc,1).replace('class="pi"','style="width:1.4em;height:1.4em"');b.querySelector("svg").style.cssText="width:1.4em;height:1.4em;overflow:visible";b.onclick=()=>{tool=T3;pal()};P.appendChild(b)};pal()}
+/* look UI */
+let ui=null;
+function closeUI(){if(ui){ui.remove();ui=null}}
+function openUI(side){closeUI();const c=cur();if(!S||!S.ob)return;side=side||"F";
+  ui=document.createElement("div");ui.style.cssText="position:fixed;inset:0;z-index:99990;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;font-family:system-ui;color:#fff";
+  const card=document.createElement("div");card.style.cssText="background:#2b2926;border:2px solid #8fcf55;border-radius:14px;padding:14px;width:min(94vw,440px);max-height:88vh;overflow:auto";
+  const names={F:"Front",L:"Left",R:"Right",B:"Back"};
+  let h='<div style="font-weight:800;font-size:1.1rem;margin-bottom:8px">👁 Look at 3D pawn(s)</div><div style="display:flex;gap:6px;margin-bottom:10px">';
+  for(const k of["F","L","R","B"]){const n=S.ob.filter(o=>o.c===c&&o.side===k).length;h+='<button data-s="'+k+'" style="flex:1;padding:8px 4px;border-radius:8px;border:2px solid '+(k===side?"#8fcf55":"#555")+';background:'+(k===side?"#3d5a22":"#3a3733")+';color:#fff;font-weight:700">'+names[k]+(n?" ("+n+")":"")+"</button>"}
+  h+="</div>";
+  if(side==="B")h+='<div style="opacity:.8">Nothing here — 3D pawns can never move backwards, so none can leave through the back.</div>';
+  else{const L=S.ob.map((o,oi)=>({o,oi})).filter(x=>x.o.c===c&&x.o.side===side);
+   if(!L.length)h+='<div style="opacity:.8">No 3D pawn on the '+names[side]+' side.</div>';
+   L.forEach((x,n)=>{h+='<div style="display:flex;align-items:center;gap:10px;margin:8px 0;padding:8px;background:#35322e;border-radius:10px"><div style="width:54px;height:54px;flex:none">'+svg3(c,1)+'</div><div style="flex:1"><div style="font-weight:700;margin-bottom:4px">3D Pawn #'+(n+1)+'</div><div style="display:flex;gap:6px;flex-wrap:wrap">'+[["q","♕ Queen"],["r","♖ Rook"],["b","♗ Bishop"],["n","♘ Knight"]].map(a=>'<button data-oi="'+x.oi+'" data-pr="'+a[0]+'" style="padding:6px 9px;border-radius:8px;border:1px solid #777;background:#1565c0;color:#fff;font-weight:700">'+a[1]+"</button>").join("")+'</div></div></div>'});
+   h+='<div style="font-size:.78rem;opacity:.75;margin-top:6px">'+(side==="F"?"Promote, then teleport to any square on the opposing last row.":"Promote, then teleport to any square outside the opposing last row.")+"</div>"}
+  h+='<div style="margin-top:12px;text-align:right"><button id="p3x" style="padding:8px 14px;border-radius:8px;border:1px solid #777;background:#555;color:#fff;font-weight:700">Close</button></div>';
+  card.innerHTML=h;ui.appendChild(card);document.body.appendChild(ui);
+  card.querySelectorAll("button[data-s]").forEach(b=>b.onclick=()=>openUI(b.dataset.s));
+  card.querySelectorAll("button[data-pr]").forEach(b=>b.onclick=()=>startPick(+b.dataset.oi,b.dataset.pr));
+  $("p3x").onclick=closeUI}
+function startPick(oi,promo){closeUI();const c=cur(),o=S.ob[oi];if(!o)return;
+  const set=new Set(tdSquares(S,o).filter(j=>{const m={k:"TD",from:j,to:j,oi,promo},T=cl(S);T.ob=(S.ob||[]).map(z=>({...z}));apply(T,m);return!inChk(T,c)}));
+  if(!set.size){status("No legal square for that teleport right now.");return}
+  P3.pick={oi,promo,set};status("Click a highlighted square to teleport the new "+(TN[promo]||"piece")+".");render();abil()}
+function mark(){if(!P3.pick)return;const bd=$("board");if(!bd)return;bd.querySelectorAll(".sq").forEach(e=>{if(P3.pick.set.has(sq2i(e.dataset.s)))e.style.boxShadow="inset 0 0 0 4px #8fcf55,inset 0 0 14px #8fcf55"})}
+{const _r=render;render=function(){const r=_r.apply(this,arguments);try{mark()}catch(e){}return r}}
+{const bd=$("board");if(bd)bd.addEventListener("click",e=>{if(!P3.pick||mode!=="play")return;const d=e.target.closest&&e.target.closest(".sq");if(!d)return;const i=sq2i(d.dataset.s);e.stopPropagation();e.preventDefault();
+  if(P3.pick.set.has(i)){const m={k:"TD",from:i,to:i,oi:P3.pick.oi,promo:P3.pick.promo};P3.pick=null;try{log("🧊 A 3D Pawn re-enters the game on "+i2sq(i)+" as a "+(TN[m.promo]||"piece")+".");flashSq(i,"rgba(143,207,85,.9)")}catch(er){}humanAct(m)}else{P3.pick=null;status("Teleport cancelled.");render();abil()}},true)}
+/* ability buttons */
+{const _ab=abil;abil=function(){_ab.apply(this,arguments);try{const a=$("abil");if(!a||!S||over||busy||!hc(cur()))return;const c=cur();
+  const mkb=(t,fn,ttl)=>{const b=document.createElement("button");b.textContent=t;if(ttl)b.title=ttl;b.onclick=fn;a.appendChild(b)};
+  if(P3.pick){mkb("✖ Cancel teleport",()=>{P3.pick=null;status("Teleport cancelled.");render();abil()});return}
+  const p=sel!=null&&S.b[sel];
+  if(p&&p.t===T3&&p.c===c){legal(S,c).filter(m=>m.k==="OB"&&m.from===sel).forEach(m=>mkb("➡ Leave the board ("+({F:"Front",L:"Left",R:"Right"}[m.side])+")",()=>humanAct(m),"The pawn steps off the board. Use “Look at 3D pawn(s)” to bring it back as a normal piece.")) }
+  const n=(S.ob||[]).filter(o=>o.c===c).length;if(n)mkb("👁 Look at 3D pawn(s) ("+n+")",()=>openUI(((S.ob.find(o=>o.c===c)||{}).side)||"F"),"See the 3D pawns that left the board, promote one and teleport it back")}catch(e){console.error(e)}}}
+window.__p3={tdSquares,openUI,svg3};
+})();
 
 })();
 </script>
